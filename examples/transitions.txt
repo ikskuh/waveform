@@ -1,0 +1,14 @@
+HiLo  | HLHLHLHLL
+low   | LLLLLLLLL
+lkeep | l-l-l--l-
+high  | HHHHHHHHH
+hkeep | h-h-h--h-
+z     | ZZZZZZZZZ
+zkeep | z-z-z--z-
+both  | BBBBBBBBB
+bkeep | b-b-b--b-
+ZLo   | zzllzzllz
+ZHi   | zzhhzzhhz
+ZBo   | zzbbzzbbz
+HiBo  | hhbbhhbbh
+LoBo  | llbbllbbl
