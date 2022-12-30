@@ -171,21 +171,24 @@ fn render(src_items: []const TimeSequence, raw_writer: std.fs.File.Writer) !void
         .max_title_width = max_title_width,
     };
 
-    // const sequence_length = items[0].sequence.len;
+    var sequence_length = src_items[0].sequence.len;
 
     // write 10s digit clock cycles
-    if (src_items[0].sequence.len > 10) {
+    var digits = std.math.log10(sequence_length - 1);
+    while (digits > 0) {
+        const pot = try std.math.powi(usize, 10, digits);
         try writer.writeByteNTimes(' ', max_title_width + 3);
         for (src_items[0].sequence) |_, i| {
             if (i > 0)
                 try writer.writeAll("  ");
-            if (i % 10 == 0 and i > 0) {
-                try writer.print("{d}", .{(i / 10) % 10});
+            if (i % 10 == 0 and i / pot > 0) {
+                try writer.print("{d}", .{(i / pot) % 10});
             } else {
-                try writer.writeAll(".");
+                try writer.writeAll(" ");
             }
         }
         try writer.writeAll("\n");
+        digits -= 1;
     }
 
     // write 1s digit clock cycles
