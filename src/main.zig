@@ -7,12 +7,14 @@ const CliOptions = struct {
 
     @"no-grid": bool = false,
     @"no-time": bool = false,
+    ascii: bool = false,
 
     pub const shorthands = .{
         .h = "help",
         .o = "output",
         .G = "no-grid",
         .T = "no-time",
+        .A = "ascii",
     };
 
     pub const meta = .{
@@ -26,6 +28,7 @@ const CliOptions = struct {
             .output = "Redirects the output to the provided file. If not given, the generated text is printed to stdout.",
             .@"no-grid" = "Disables generation of the vertical grid axis.",
             .@"no-time" = "Disables generation of the time step numbers.",
+            .ascii = "Outputs ASCII graphics instead of UTF-8.",
         },
     };
 };
@@ -158,17 +161,19 @@ pub fn main() !u8 {
     try render(sequences.items, output_file.writer(), .{
         .grid = !cli.options.@"no-grid",
         .time = !cli.options.@"no-time",
+        .ascii = cli.options.ascii,
     });
 
     return 0;
 }
 
-const RenderOptions = struct {
+pub const RenderOptions = struct {
     grid: bool,
     time: bool,
+    ascii: bool,
 };
 
-fn render(src_items: []const TimeSequence, raw_writer: std.fs.File.Writer, options: RenderOptions) !void {
+pub fn render(src_items: []const TimeSequence, raw_writer: std.fs.File.Writer, options: RenderOptions) !void {
     var buffered_writer = std.io.bufferedWriter(raw_writer);
     const writer = buffered_writer.writer();
 
@@ -178,19 +183,27 @@ fn render(src_items: []const TimeSequence, raw_writer: std.fs.File.Writer, optio
         items: []const TimeSequence,
         writer: BufferedWriter,
         max_title_width: usize,
-        spacing_char: []const u8,
+        transitions: TransitionSet,
 
         fn flushLine(r: @This()) !void {
             try r.writer.writeByteNTimes(' ', r.max_title_width + 3);
             for (r.items[0].sequence, 0..) |_, i| {
                 if (i > 0)
                     try r.writer.writeAll("  ");
-                try r.writer.writeAll(r.spacing_char);
+                try r.writer.writeAll(r.transitions.grid_column);
             }
             try r.writer.writeAll("\n");
         }
 
-        pub fn writeSeries(r: @This(), events: []const Edge, lookup_table: [5][5][]const u8, row: u2) !void {
+        pub fn writeSeries(r: @This(), events: []const Edge, lut_id: TransitionLUT, row: u2) !void {
+            const lookup_table: [5][5][]const u8 = switch (lut_id) {
+                inline else => |tag| @field(r.transitions, @tagName(tag)),
+            };
+
+            const hspc = "  ";
+            const hout = r.transitions.phase_out;
+            const hpad = r.transitions.keep_level;
+
             var previous_state: Edge = .high_impedance;
             for (events, 0..) |event, i| {
                 if (i == 0 and event != .keep)
@@ -199,10 +212,10 @@ fn render(src_items: []const TimeSequence, raw_writer: std.fs.File.Writer, optio
                 if (i == 0) {
                     try r.writer.writeAll(switch (previous_state) {
                         .keep => unreachable,
-                        .high => if (row == 0) "╍╍" else "  ",
-                        .high_impedance => if (row == 1) "╍╍" else "  ",
-                        .both => if (row != 1) "╍╍" else "  ",
-                        .low => if (row == 2) "╍╍" else "  ",
+                        .high => if (row == 0) hout else hspc,
+                        .high_impedance => if (row == 1) hout else hspc,
+                        .both => if (row != 1) hout else hspc,
+                        .low => if (row == 2) hout else hspc,
                     });
                 }
 
@@ -218,23 +231,23 @@ fn render(src_items: []const TimeSequence, raw_writer: std.fs.File.Writer, optio
                         .high_impedance => (row == 1),
                         .low => (row == 2),
                     };
-                    try r.writer.writeAll(if (level) "━━" else "  ");
+                    try r.writer.writeAll(if (level) hpad else hspc);
                 }
 
                 var out = lookup_table[@intFromEnum(event)][@intFromEnum(previous_state)];
 
                 if (std.mem.eql(u8, out, SPC)) {
-                    out = r.spacing_char;
+                    out = r.transitions.grid_column;
                 }
 
                 try r.writer.writeAll(out);
             }
             try r.writer.writeAll(switch (previous_state) {
                 .keep => unreachable,
-                .high => if (row == 0) "╍╍" else "  ",
-                .high_impedance => if (row == 1) "╍╍" else "  ",
-                .both => if (row != 1) "╍╍" else "  ",
-                .low => if (row == 2) "╍╍" else "  ",
+                .high => if (row == 0) hout else hspc,
+                .high_impedance => if (row == 1) hout else hspc,
+                .both => if (row != 1) hout else hspc,
+                .low => if (row == 2) hout else hspc,
             });
         }
     };
@@ -245,15 +258,20 @@ fn render(src_items: []const TimeSequence, raw_writer: std.fs.File.Writer, optio
             max_title_width = seq.title.len;
     }
 
+    var transitions = if (options.ascii)
+        ascii_transitions
+    else
+        unicode_transitions;
+
+    if (!options.grid)
+        transitions.grid_column = " ";
+
     const renderer = Renderer{
         .items = src_items,
         .writer = writer,
         .max_title_width = max_title_width,
 
-        .spacing_char = if (options.grid)
-            "┆"
-        else
-            SPC,
+        .transitions = transitions,
     };
 
     var sequence_length = src_items[0].sequence.len;
@@ -296,7 +314,7 @@ fn render(src_items: []const TimeSequence, raw_writer: std.fs.File.Writer, optio
         // top row
         {
             try writer.writeByteNTimes(' ', max_title_width + 1);
-            try renderer.writeSeries(time_series.sequence, upper_row_transitions, 0);
+            try renderer.writeSeries(time_series.sequence, .upper_row, 0);
             try writer.writeAll("\n");
         }
 
@@ -306,14 +324,14 @@ fn render(src_items: []const TimeSequence, raw_writer: std.fs.File.Writer, optio
                 .title = time_series.title,
                 .padding = max_title_width,
             });
-            try renderer.writeSeries(time_series.sequence, middle_row_transitions, 1);
+            try renderer.writeSeries(time_series.sequence, .middle_row, 1);
             try writer.writeAll("\n");
         }
 
         // bottom row
         {
             try writer.writeByteNTimes(' ', max_title_width + 1);
-            try renderer.writeSeries(time_series.sequence, bottom_row_transitions, 2);
+            try renderer.writeSeries(time_series.sequence, .bottom_row, 2);
             try writer.writeAll("\n");
         }
         try renderer.flushLine();
@@ -324,48 +342,112 @@ fn render(src_items: []const TimeSequence, raw_writer: std.fs.File.Writer, optio
 
 const SPC = " ";
 
-//                            ↓-to
-//                               ↓-from
-const upper_row_transitions: [5][5][]const u8 = .{
-    // from:
-    //  -    h    l    z    b     to:
-    .{ "X", "━", SPC, SPC, "━" }, // -
-    .{ "X", "━", "┏", "┏", "┳" }, // h
-    .{ "X", "┓", SPC, SPC, "┓" }, // l
-    .{ "X", "┓", SPC, SPC, "┓" }, // z
-    .{ "X", "┳", "┏", "┏", "┳" }, // b
+pub const TransitionLUT = enum {
+    upper_row,
+    middle_row,
+    bottom_row,
 };
 
-//                             ↓-to
-//                                ↓-from
-const middle_row_transitions: [5][5][]const u8 = .{
-    // from:
-    //  -    h    l    z    b     to:
-    .{ "X", SPC, SPC, "━", SPC }, // -
-    .{ "X", SPC, "┃", "┛", "┃" }, // h
-    .{ "X", "┃", SPC, "┓", "┃" }, // l
-    .{ "X", "┗", "┏", "━", "┣" }, // z
-    .{ "X", "┃", "┃", "┫", "┃" }, // b
+const TransitionSet = struct {
+    phase_out: []const u8,
+    keep_level: []const u8,
+    grid_column: []const u8,
+
+    upper_row: [5][5][]const u8,
+    middle_row: [5][5][]const u8,
+    bottom_row: [5][5][]const u8,
 };
 
-//                             ↓-to
-//                                ↓-from
-const bottom_row_transitions: [5][5][]const u8 = .{
-    // from:
-    //  -    h    l    z    b     to:
-    .{ "X", SPC, "━", SPC, "━" }, // -
-    .{ "X", SPC, "┛", SPC, "┛" }, // h
-    .{ "X", "┗", "━", "┗", "┻" }, // l
-    .{ "X", SPC, "┛", SPC, "┛" }, // z
-    .{ "X", "┗", "┻", "┗", "┻" }, // b
+const unicode_transitions = TransitionSet{
+    .phase_out = "╍╍",
+    .keep_level = "━━",
+    .grid_column = "┆",
+
+    //                            ↓-to
+    //                               ↓-from
+    .upper_row = .{
+        // from:
+        //  -    h    l    z    b     to:
+        .{ "X", "━", SPC, SPC, "━" }, // -
+        .{ "X", "━", "┏", "┏", "┳" }, // h
+        .{ "X", "┓", SPC, SPC, "┓" }, // l
+        .{ "X", "┓", SPC, SPC, "┓" }, // z
+        .{ "X", "┳", "┏", "┏", "┳" }, // b
+    },
+
+    //                             ↓-to
+    //                                ↓-from
+    .middle_row = .{
+        // from:
+        //  -    h    l    z    b     to:
+        .{ "X", SPC, SPC, "━", SPC }, // -
+        .{ "X", SPC, "┃", "┛", "┃" }, // h
+        .{ "X", "┃", SPC, "┓", "┃" }, // l
+        .{ "X", "┗", "┏", "━", "┣" }, // z
+        .{ "X", "┃", "┃", "┫", "┃" }, // b
+    },
+
+    //                             ↓-to
+    //                                ↓-from
+    .bottom_row = .{
+        // from:
+        //  -    h    l    z    b     to:
+        .{ "X", SPC, "━", SPC, "━" }, // -
+        .{ "X", SPC, "┛", SPC, "┛" }, // h
+        .{ "X", "┗", "━", "┗", "┻" }, // l
+        .{ "X", SPC, "┛", SPC, "┛" }, // z
+        .{ "X", "┗", "┻", "┗", "┻" }, // b
+    },
 };
 
-const TimeSequence = struct {
+const ascii_transitions = TransitionSet{
+    .phase_out = "--",
+    .keep_level = "--",
+    .grid_column = "'", // TODO: what here?
+
+    //                            ↓-to
+    //                               ↓-from
+    .upper_row = .{
+        // from:
+        //  -    h    l    z    b     to:
+        .{ "X", "-", SPC, SPC, "-" }, // -
+        .{ "X", "-", ".", ".", "+" }, // h
+        .{ "X", ".", SPC, SPC, "." }, // l
+        .{ "X", ".", SPC, SPC, "." }, // z
+        .{ "X", "+", ".", ".", "+" }, // b
+    },
+
+    //                             ↓-to
+    //                                ↓-from
+    .middle_row = .{
+        // from:
+        //  -    h    l    z    b     to:
+        .{ "X", SPC, SPC, "-", SPC }, // -
+        .{ "X", SPC, "|", "'", "|" }, // h
+        .{ "X", "|", SPC, ".", "|" }, // l
+        .{ "X", "'", ".", "-", "|" }, // z
+        .{ "X", "|", "|", "|", "|" }, // b
+    },
+
+    //                             ↓-to
+    //                                ↓-from
+    .bottom_row = .{
+        // from:
+        //  -    h    l    z    b     to:
+        .{ "X", SPC, "-", SPC, "-" }, // -
+        .{ "X", SPC, "'", SPC, "'" }, // h
+        .{ "X", "'", "-", "'", "+" }, // l
+        .{ "X", SPC, "'", SPC, "'" }, // z
+        .{ "X", "'", "+", "'", "+" }, // b
+    },
+};
+
+pub const TimeSequence = struct {
     title: []u8,
     sequence: []Edge,
 };
 
-const Edge = enum(u8) {
+pub const Edge = enum(u8) {
     keep = 0,
     high = 1,
     low = 2,
