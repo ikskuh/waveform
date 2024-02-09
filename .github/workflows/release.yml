@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        target: [
+          "x86_64-linux",
+          "aarch64-linux",
+          "arm-linux",
+          "riscv64-linux",
+          "x86_64-windows",
+          "aarch64-windows",
+          "x86_64-macos",
+          "aarch64-macos",
+        ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.11.0
+
+      - name: Build
+        run: |
+          zig build -Drelease -Dtarget=${{ matrix.target }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveform-${{ matrix.target }}
+          path: zig-out/bin
+  
