@@ -1,29 +1,44 @@
 const std = @import("std");
-const zpm = @import("zpm.zig");
 
 pub fn build(b: *std.build.Builder) void {
+    // steps:
+    const run_step = b.step("run", "Run the app");
+    const test_step = b.step("test", "Run unit tests");
+
+    // options:
     const target = b.standardTargetOptions(.{});
-    const mode = b.standardReleaseOptions();
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
-    const exe = b.addExecutable("waveform", "src/main.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
-    exe.addPackage(zpm.pkgs.args);
-    exe.install();
+    // dependencies:
 
-    const run_cmd = exe.run();
+    const args_dep = b.dependency("args", .{});
+
+    // modules:
+    const args_mod = args_dep.module("args");
+
+    // waveform executable:
+    const exe = b.addExecutable(.{
+        .name = "waveform",
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.addModule("args", args_mod);
+    b.installArtifact(exe);
+
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-
-    const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const exe_tests = b.addTest("src/main.zig");
-    exe_tests.setTarget(target);
-    exe_tests.setBuildMode(mode);
+    // Unit tests:
 
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&exe_tests.step);
+    const exe_tests = b.addTest(.{
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 }
